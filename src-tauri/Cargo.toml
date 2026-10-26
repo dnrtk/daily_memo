@@ -1,0 +1,24 @@
+[package]
+name = "memo-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lightweight memo editor with local-LLM search"
+
+[lib]
+name = "memo_editor_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+memo-core = { path = "../crates/memo-core" }
+memo-index = { path = "../crates/memo-index" }
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+portable-pty = "0.9"

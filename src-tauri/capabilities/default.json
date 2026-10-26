@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "メイン / 切り離しウィンドウの権限。ファイル操作は独自コマンド経由(作業フォルダ外は Rust 側で拒否)なので fs プラグインは使わない",
+  "windows": [
+    "main",
+    "w-*"
+  ],
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "dialog:allow-ask",
+    "dialog:allow-message",
+    "core:window:allow-destroy",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-title",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-is-fullscreen"
+  ]
+}

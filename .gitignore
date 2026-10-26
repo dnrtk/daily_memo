@@ -1,0 +1,23 @@
+# 依存・ビルド成果物
+node_modules/
+dist/
+target/
+src-tauri/gen/
+
+# PDFium バイナリ(npm run ensure-pdfium で取得)
+src-tauri/pdfium/
+
+# このフォルダを作業フォルダとして開いたときの検索インデックス
+.memo/
+
+# ログ・ローカル環境
+*.log
+.env
+.env.*
+
+# OS / エディタ
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
