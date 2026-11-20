@@ -105,6 +105,49 @@ pub struct TerminalSettings {
     pub shell: String,
 }
 
+/// 複数端末の同期(Git)。どのリモートと同期するかは作業フォルダの `.git/config` 側に持ち、
+/// ここには端末ごとの動かし方だけを置く
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SyncSettings {
+    /// 自動で同期する(オフなら手動のみ)
+    #[serde(default = "default_true")]
+    pub auto: bool,
+    /// 他の端末の変更を取りに行く間隔(分)
+    #[serde(default = "default_sync_interval")]
+    pub interval_min: u32,
+    /// 保存してから、この秒数だけ編集が止まったら送る
+    #[serde(default = "default_after_save")]
+    pub after_save_sec: u32,
+    #[serde(default = "default_true")]
+    pub on_startup: bool,
+    /// 終了時に未送信の変更があれば送ってから閉じる
+    #[serde(default = "default_true")]
+    pub on_exit: bool,
+    /// 履歴や競合の表示に使う端末名。空ならコンピューター名
+    #[serde(default)]
+    pub device_name: String,
+}
+
+fn default_sync_interval() -> u32 {
+    5
+}
+fn default_after_save() -> u32 {
+    60
+}
+
+impl Default for SyncSettings {
+    fn default() -> Self {
+        Self {
+            auto: true,
+            interval_min: default_sync_interval(),
+            after_save_sec: default_after_save(),
+            on_startup: true,
+            on_exit: true,
+            device_name: String::new(),
+        }
+    }
+}
+
 fn default_max_file_mb() -> u64 {
     50
 }
@@ -142,6 +185,8 @@ pub struct AppSettings {
     pub search: SearchSettings,
     #[serde(default)]
     pub terminal: TerminalSettings,
+    #[serde(default)]
+    pub sync: SyncSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_workspace: Option<String>,
 }
@@ -171,6 +216,7 @@ impl Default for AppSettings {
             editor: EditorSettings::default(),
             search: SearchSettings::default(),
             terminal: TerminalSettings::default(),
+            sync: SyncSettings::default(),
             last_workspace: None,
         }
     }
@@ -258,6 +304,7 @@ roles:
         assert_eq!(s.provider("lab-vllm").unwrap().kind, ProviderKind::OpenaiCompat);
         assert_eq!(s.editor, EditorSettings::default());
         assert_eq!(s.search, SearchSettings::default());
+        assert_eq!(s.sync, SyncSettings::default());
         assert!(s.roles.embedding.query_prefix.is_empty());
     }
 

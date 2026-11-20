@@ -1,20 +1,37 @@
-// 設定: カテゴリ定義(作業フォルダごと) / LLM 接続 / エディタ(マシンごと)
-import { useState, type ReactNode } from "react";
+// 設定: カテゴリ定義(作業フォルダごと) / 同期 / LLM 接続 / 検索 / エディタ(マシンごと)
+import { useState } from "react";
+import { Field } from "./Field";
 import { api, errorMessage } from "../api";
-import type { AppSettings, Category, CategoryConfig, Provider, WorkspaceInfo } from "../types";
+import type { AppSettings, Category, CategoryConfig, Provider, SyncOutcome, WorkspaceInfo } from "../types";
+import type { SyncApi } from "../useSync";
+import { SyncTab } from "./SyncSettings";
 
-type Tab = "categories" | "llm" | "search" | "editor";
+export type SettingsTab = "categories" | "sync" | "llm" | "search" | "editor";
 
 interface Props {
   workspace: WorkspaceInfo | null;
   settings: AppSettings;
+  initialTab?: SettingsTab;
+  sync: SyncApi;
+  flush(): Promise<void>;
+  onSyncOutcome(o: SyncOutcome): void;
   onClose(): void;
   onWorkspaceSaved(ws: WorkspaceInfo): void;
   onSettingsSaved(s: AppSettings): void;
 }
 
-export function SettingsDialog({ workspace, settings, onClose, onWorkspaceSaved, onSettingsSaved }: Props) {
-  const [tab, setTab] = useState<Tab>(workspace ? "categories" : "llm");
+export function SettingsDialog({
+  workspace,
+  settings,
+  initialTab,
+  sync,
+  flush,
+  onSyncOutcome,
+  onClose,
+  onWorkspaceSaved,
+  onSettingsSaved,
+}: Props) {
+  const [tab, setTab] = useState<SettingsTab>(initialTab ?? (workspace ? "categories" : "llm"));
   return (
     <div className="backdrop" onMouseDown={onClose}>
       <div
@@ -28,6 +45,7 @@ export function SettingsDialog({ workspace, settings, onClose, onWorkspaceSaved,
             {(
               [
                 ["categories", "カテゴリ"],
+                ["sync", "同期"],
                 ["llm", "LLM 接続"],
                 ["search", "検索"],
                 ["editor", "エディタ"],
@@ -38,7 +56,7 @@ export function SettingsDialog({ workspace, settings, onClose, onWorkspaceSaved,
                 role="tab"
                 aria-selected={tab === id}
                 className={tab === id ? "on" : ""}
-                disabled={id === "categories" && !workspace}
+                disabled={(id === "categories" || id === "sync") && !workspace}
                 onClick={() => setTab(id)}
               >
                 {label}
@@ -51,6 +69,16 @@ export function SettingsDialog({ workspace, settings, onClose, onWorkspaceSaved,
         </header>
         {tab === "categories" && workspace && (
           <CategoriesTab config={workspace.categories} onSaved={onWorkspaceSaved} />
+        )}
+        {tab === "sync" && (
+          <SyncTab
+            settings={settings}
+            hasWorkspace={!!workspace}
+            sync={sync}
+            flush={flush}
+            onOutcome={onSyncOutcome}
+            onSaved={onSettingsSaved}
+          />
         )}
         {tab === "llm" && <LlmTab settings={settings} onSaved={onSettingsSaved} />}
         {tab === "search" && <SearchTab settings={settings} onSaved={onSettingsSaved} />}
@@ -521,15 +549,5 @@ function EditorTab({ settings, onSaved }: { settings: AppSettings; onSaved(s: Ap
         </button>
       </footer>
     </div>
-  );
-}
-
-function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <label className="field">
-      <span className="field-label">{label}</span>
-      {children}
-      {hint && <span className="field-hint">{hint}</span>}
-    </label>
   );
 }

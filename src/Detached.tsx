@@ -117,6 +117,16 @@ function DetachedEditor({ initial, settings, onError }: { initial: Tab; settings
       listen<{ path: string }>("file-changed", (e) => {
         if (e.payload.path === tabRef.current.path) void editor.current?.reload(e.payload.path);
       }),
+      // 同期の前: メインから保存を頼まれる
+      listen<{ id: string }>("flush-request", async (e) => {
+        await editor.current?.saveAll();
+        await emitTo("main", "flush-done", { id: e.payload.id });
+      }),
+      // 同期の後: 他の端末の変更を取り込む(未保存の編集があれば上書きしない)
+      listen<{ paths: string[] }>("files-synced", (e) => {
+        const p = tabRef.current.path;
+        if (e.payload.paths.includes(p)) void editor.current?.refresh(p);
+      }),
     ];
     const closeReq = getCurrentWindow().onCloseRequested(async () => {
       if (leaving.current) return;
@@ -169,7 +179,11 @@ function DetachedEditor({ initial, settings, onError }: { initial: Tab; settings
         onFocus={() => {}}
         onActivate={() => {}}
         onClose={() => void close()}
-        onDirtyChange={(_p, dirty) => setTab((t) => (t.dirty === dirty ? t : { ...t, dirty }))}
+        onDirtyChange={(_p, dirty) => {
+          setTab((t) => (t.dirty === dirty ? t : { ...t, dirty }));
+          // 保存したことをメインに伝える(編集が止まったら自動同期するため)
+          if (!dirty) void emitTo("main", "detached-saved", {});
+        }}
         onSetMode={(_p, mode: MdMode) => setTab((t) => ({ ...t, mdMode: mode }))}
         onTabMenu={(_p, x, y) =>
           setMenu({

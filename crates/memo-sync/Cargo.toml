@@ -1,0 +1,15 @@
+[package]
+name = "memo-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Git-based multi-device sync (GitHub / GitLab / file server) for memo-editor"
+
+[dependencies]
+memo-core = { path = "../memo-core" }
+serde.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -3,7 +3,7 @@ import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, baseName, errorMessage, isTextKind, joinPath, parentOf } from "./api";
-import type { AppSettings, DirEntry, FileHit, IndexStatus, WorkspaceInfo } from "./types";
+import type { AppSettings, DirEntry, FileHit, IndexStatus, SyncOutcome, WorkspaceInfo } from "./types";
 import { isMarkdown, type DetachedPayload, type Group, type MdMode, type Tab, type TermRestore } from "./editorTypes";
 import type { EditorHandle } from "./components/Editor";
 import { EditorGroup } from "./components/EditorGroup";
@@ -13,12 +13,21 @@ import { FileTree } from "./components/FileTree";
 import { ContextMenu, PromptDialog, type MenuItem, type PromptState } from "./components/Overlays";
 import { QuickCapture } from "./components/QuickCapture";
 import { SearchPanel } from "./components/SearchPanel";
-import { SettingsDialog } from "./components/SettingsDialog";
+import { SettingsDialog, type SettingsTab } from "./components/SettingsDialog";
+import { SyncIndicator } from "./components/SyncIndicator";
+import { ConflictDialog } from "./components/ConflictDialog";
+import { useSync } from "./useSync";
 import { AboutDialog } from "./components/AboutDialog";
 import { SplitDivider } from "./components/SplitDivider";
 import { dropGroupId, type DropResult } from "./components/tabDrag";
 
 type SideView = "files" | "search";
+
+interface Toast {
+  msg: string;
+  error?: boolean;
+  action?: { label: string; run(): void };
+}
 
 interface Preview {
   file: FileHit;
@@ -77,8 +86,11 @@ export default function App() {
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [prompt, setPrompt] = useState<PromptState | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>(undefined);
+  const [showConflicts, setShowConflicts] = useState(false);
+  const [closing, setClosing] = useState(false);
   const [showCapture, setShowCapture] = useState(false);
-  const [toast, setToast] = useState<{ msg: string; error?: boolean } | null>(null);
+  const [toast, setToast] = useState<Toast | null>(null);
   const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null);
   const [searchFocus, setSearchFocus] = useState(0);
   const [showAbout, setShowAbout] = useState(false);
@@ -134,9 +146,9 @@ export default function App() {
     setTermOpen(true);
   };
 
-  const notify = useCallback((msg: string, error = false) => {
-    setToast({ msg, error });
-    window.setTimeout(() => setToast((t) => (t?.msg === msg ? null : t)), error ? 6000 : 2500);
+  const notify = useCallback((msg: string, error = false, action?: Toast["action"]) => {
+    setToast({ msg, error, action });
+    window.setTimeout(() => setToast((t) => (t?.msg === msg ? null : t)), action ? 10000 : error ? 6000 : 2500);
   }, []);
   const onError = useCallback((msg: string) => notify(msg, true), [notify]);
   const refreshTree = () => setReloadKey((k) => k + 1);
@@ -161,6 +173,95 @@ export default function App() {
   };
   const saveAll = async () => {
     await Promise.all([...editors.current.values()].map((e) => e.saveAll()));
+  };
+
+  // ---- 同期(Git) -------------------------------------------------------------------
+
+  /** 同期の前に、メインと切り離したウィンドウのエディタをすべて保存する */
+  const flushEditors = async () => {
+    await saveAll();
+    const windows = new Set(detached.current.values()).size;
+    if (windows === 0) return;
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    await new Promise<void>((resolve) => {
+      let got = 0;
+      let off: (() => void) | null = null;
+      const finish = () => {
+        window.clearTimeout(timer);
+        off?.();
+        resolve();
+      };
+      // 応答のないウィンドウがあっても同期は止めない
+      const timer = window.setTimeout(finish, 1000);
+      void listen<{ id: string }>("flush-done", (e) => {
+        if (e.payload.id === id && ++got >= windows) finish();
+      }).then((f) => {
+        off = f;
+        void emit("flush-request", { id });
+      });
+    });
+  };
+
+  /** タブ・ツリーから消えたファイルを外す(ゴミ箱へ移動 / 他の端末での削除) */
+  const dropPaths = (gone: (p: string) => boolean) => {
+    groupsRef.current.forEach((g) => g.tabs.filter((t) => gone(t.path)).forEach((t) => editorOf(g.id)?.forget(t.path)));
+    setGroups((gs) => {
+      let next = gs;
+      gs.forEach((g) => g.tabs.filter((t) => gone(t.path)).forEach((t) => (next = removeTab(next, t.path))));
+      return next;
+    });
+    for (const p of [...detached.current.keys()]) if (gone(p)) detached.current.delete(p);
+  };
+
+  /** 同期の結果を画面に反映する(他の端末の変更の読み込み・削除されたタブ・通知) */
+  const applySyncOutcome = async (o: SyncOutcome, manual: boolean) => {
+    if (o.workspace) onWorkspaceSaved(o.workspace);
+    const r = o.report;
+    let kept: string[] = [];
+    if (r && r.changed.length > 0) {
+      refreshTree();
+      const removed = r.changed.filter((c) => c.kind === "deleted").map((c) => c.path);
+      const updated = r.changed.filter((c) => c.kind !== "deleted").map((c) => c.path);
+      if (removed.length > 0) {
+        const set = new Set(removed);
+        dropPaths((p) => set.has(p));
+        removed.forEach((path) => void emit("paths-removed", { path }));
+      }
+      const results = await Promise.all(
+        updated.flatMap((p) => [...editors.current.values()].map(async (ed) => ((await ed.refresh(p)) === "kept" ? p : null))),
+      );
+      kept = [...new Set(results.filter((x): x is string => !!x))];
+      if (updated.length > 0) void emit("files-synced", { paths: updated });
+    }
+    // 通知は大事なものを 1 つだけ
+    if (r && r.conflicts.length > 0) {
+      notify(`他の端末と同じ箇所を編集したファイルが ${r.conflicts.length} 件あります`, true, {
+        label: "解消する",
+        run: () => setShowConflicts(true),
+      });
+    } else if (o.error && o.error.kind !== "busy" && manual) {
+      notify(o.error.message, true);
+    } else if (r && r.auto_resolved.length > 0) {
+      const a = r.auto_resolved[0];
+      notify(
+        r.auto_resolved.length === 1 && a.copy
+          ? `${baseName(a.path)}: ${a.note}(${baseName(a.copy)})`
+          : `${r.auto_resolved.length} 件のファイルは両方の版を残しました(「競合」を含む名前のファイル)`,
+      );
+    } else if (kept.length > 0) {
+      notify(`${kept.map(baseName).join("、")} は他の端末でも更新されましたが、編集中のため読み込み直していません`);
+    } else if (r && r.notes.length > 0) {
+      notify(r.notes.join(" / "));
+    } else if (r && manual) {
+      const got = r.changed.length;
+      notify(
+        got > 0
+          ? `同期しました(他の端末の変更 ${got} 件を取り込み)`
+          : r.pushed
+            ? "同期しました(この端末の変更を送信)"
+            : "同期済みです(変更はありません)",
+      );
+    }
   };
 
   /** タブを開く / 更新する。別ウィンドウで開いているファイルならそのウィンドウを前面に出す */
@@ -307,6 +408,7 @@ export default function App() {
     setGroups((gs) => gs.map((g) => ({ ...g, tabs: g.tabs.map((t) => (t.path === path ? { ...t, mdMode: mode } : t)) })));
 
   const onDirtyChange = useCallback((path: string, dirty: boolean) => {
+    if (!dirty) syncRef.current?.noteSaved();
     setGroups((gs) =>
       gs.map((g) =>
         g.tabs.some((t) => t.path === path && t.dirty !== dirty)
@@ -401,10 +503,16 @@ export default function App() {
       }),
       listen<{ path: string }>("detached-closed", (e) => detached.current.delete(e.payload.path)),
       listen<{ path: string }>("open-file", (e) => void handlers.current.openTab(e.payload.path)),
+      listen("detached-saved", () => syncRef.current?.noteSaved()),
     ];
-    // メインを閉じる前に保存(切り離したウィンドウは Rust 側でそれぞれ閉じる)
+    // メインを閉じる前に保存し、未送信の変更があれば送る(切り離したウィンドウは Rust 側でそれぞれ閉じる)
     const close = getCurrentWindow().onCloseRequested(async () => {
       await Promise.all([...editors.current.values()].map((e) => e.saveAll()));
+      const st = syncRef.current?.status;
+      if (st?.state === "ready" && st.remote_url && syncRef.current) {
+        setClosing(true);
+        await syncRef.current.flushOnExit(15000);
+      }
     });
     return () => {
       subs.forEach((s) => void s.then((f) => f()));
@@ -522,14 +630,7 @@ export default function App() {
     if (!ok) return;
     try {
       await api.trashPath(e.path);
-      const gone = (p: string) => p === e.path || p.startsWith(`${e.path}/`);
-      groupsRef.current.forEach((g) => g.tabs.filter((t) => gone(t.path)).forEach((t) => editorOf(g.id)?.forget(t.path)));
-      setGroups((gs) => {
-        let next = gs;
-        gs.forEach((g) => g.tabs.filter((t) => gone(t.path)).forEach((t) => (next = removeTab(next, t.path))));
-        return next;
-      });
-      for (const p of [...detached.current.keys()]) if (gone(p)) detached.current.delete(p);
+      dropPaths((p) => p === e.path || p.startsWith(`${e.path}/`));
       void emit("paths-removed", { path: e.path });
       refreshTree();
     } catch (err) {
@@ -597,6 +698,34 @@ export default function App() {
     refreshTree();
   };
 
+  const sync = useSync({
+    root: workspace?.root ?? null,
+    settings: settings?.sync,
+    flush: flushEditors,
+    onApplied: (o, manual) => void applySyncOutcome(o, manual),
+  });
+  const syncRef = useRef(sync);
+  syncRef.current = sync;
+
+  const openSettings = (tab?: SettingsTab) => {
+    setSettingsTab(tab);
+    setShowSettings(true);
+  };
+
+  const syncNow = () => {
+    if (!workspace) return;
+    if (sync.status?.state !== "ready") openSettings("sync");
+    else if (sync.status.conflicts.length > 0) setShowConflicts(true);
+    else void sync.run({ manual: true });
+  };
+
+  const autoNote = (() => {
+    const s = settings?.sync;
+    if (!s?.auto) return null;
+    const after = s.after_save_sec >= 60 ? `${Math.round(s.after_save_sec / 60)} 分後` : `${s.after_save_sec} 秒後`;
+    return `${s.interval_min} 分ごと・保存の ${after}`;
+  })();
+
   // ---- ショートカット --------------------------------------------------------------
 
   const focusedTabs = groups.find((g) => g.id === focusedGroup) ?? groups[0];
@@ -646,9 +775,12 @@ export default function App() {
     } else if (k === "f" && e.shiftKey && workspace) {
       e.preventDefault();
       openSearch();
+    } else if (k === "s" && e.shiftKey && workspace) {
+      e.preventDefault();
+      syncNow();
     } else if (k === ",") {
       e.preventDefault();
-      setShowSettings(true);
+      openSettings();
     }
   };
   useEffect(() => {
@@ -670,6 +802,7 @@ export default function App() {
         <dt>Ctrl+Shift+D</dt><dd>今日のメモ</dd>
         <dt>Ctrl+Shift+N</dt><dd>クイックメモ</dd>
         <dt>Ctrl+Shift+F</dt><dd>自然言語検索</dd>
+        <dt>Ctrl+Shift+S</dt><dd>今すぐ同期</dd>
         <dt>Ctrl+B</dt><dd>サイドバーの表示 / 非表示</dd>
         <dt>Ctrl+J</dt><dd>ターミナルの表示 / 非表示</dd>
         <dt>Ctrl+\</dt><dd>エディタを左右に分割</dd>
@@ -706,7 +839,7 @@ export default function App() {
         <button title="このアプリについて・ライセンス" onClick={() => setShowAbout(true)}>
           <svg viewBox="0 0 24 24" aria-hidden><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7.5v.5" /></svg>
         </button>
-        <button title="設定 (Ctrl+,)" onClick={() => setShowSettings(true)}>
+        <button title="設定 (Ctrl+,)" onClick={() => openSettings()}>
           <svg viewBox="0 0 24 24" aria-hidden><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" /></svg>
         </button>
       </nav>
@@ -856,6 +989,14 @@ export default function App() {
             </span>
           )}
           {settings && <span title="LLM">{settings.roles.chat.model} / {settings.roles.embedding.model}</span>}
+          {workspace && (
+            <SyncIndicator
+              sync={sync}
+              autoNote={autoNote}
+              onOpenSettings={() => openSettings("sync")}
+              onOpenConflicts={() => setShowConflicts(true)}
+            />
+          )}
         </footer>
       </main>
 
@@ -887,6 +1028,10 @@ export default function App() {
         <SettingsDialog
           workspace={workspace}
           settings={settings}
+          initialTab={settingsTab}
+          sync={sync}
+          flush={flushEditors}
+          onSyncOutcome={(o) => void applySyncOutcome(o, true)}
           onClose={() => setShowSettings(false)}
           onWorkspaceSaved={onWorkspaceSaved}
           onSettingsSaved={(s) => {
@@ -896,9 +1041,41 @@ export default function App() {
         />
       )}
       {showAbout && <AboutDialog onClose={() => setShowAbout(false)} />}
+      {showConflicts && (
+        <ConflictDialog
+          onClose={() => {
+            setShowConflicts(false);
+            void sync.refresh();
+          }}
+          onFileChanged={(p) => {
+            editors.current.forEach((ed) => void ed.refresh(p));
+            void emit("files-synced", { paths: [p] });
+            refreshTree();
+          }}
+          onAllResolved={() => {
+            void sync.run({ manual: true }).finally(() => setShowConflicts(false));
+          }}
+        />
+      )}
       {toast && (
         <div className={toast.error ? "toast error" : "toast"} role="status">
-          {toast.msg}
+          <span>{toast.msg}</span>
+          {toast.action && (
+            <button
+              className="small primary"
+              onClick={() => {
+                toast.action?.run();
+                setToast(null);
+              }}
+            >
+              {toast.action.label}
+            </button>
+          )}
+        </div>
+      )}
+      {closing && (
+        <div className="closing" role="status">
+          未送信の変更を同期してから閉じています…
         </div>
       )}
     </div>

@@ -95,6 +95,7 @@ export interface AppSettings {
   editor: EditorSettings;
   search: SearchSettings;
   terminal: TerminalSettings;
+  sync: SyncSettings;
   last_workspace?: string | null;
 }
 
@@ -195,4 +196,118 @@ export interface ChunkRow {
   line: number | null;
   page: number | null;
   text: string;
+}
+
+// ---- 同期(Git) ------------------------------------------------------------------
+
+export interface SyncSettings {
+  auto: boolean;
+  interval_min: number;
+  after_save_sec: number;
+  on_startup: boolean;
+  on_exit: boolean;
+  device_name: string;
+}
+
+export type RemoteKind = "github" | "gitlab" | "file" | "other";
+export type ChangeKind = "added" | "modified" | "deleted";
+
+export interface Change {
+  path: string;
+  kind: ChangeKind;
+}
+
+export type RepoState =
+  | { state: "git_missing" }
+  | { state: "not_repo" }
+  | { state: "nested"; top: string }
+  | { state: "disabled"; remote_url: string | null }
+  | { state: "ready" };
+
+export type SyncStatus = RepoState & {
+  git_version: string | null;
+  remote_url: string | null;
+  remote_kind: RemoteKind | null;
+  branch: string | null;
+  pending: Change[];
+  ahead: number;
+  merging: boolean;
+  conflicts: string[];
+  last_sync: number | null;
+  problem: string | null;
+};
+
+export type SyncErrorKind =
+  | "git_missing"
+  | "network"
+  | "auth"
+  | "not_found"
+  | "ownership"
+  | "rejected"
+  | "timeout"
+  | "busy"
+  | "state"
+  | "other";
+
+export interface SyncError {
+  kind: SyncErrorKind;
+  message: string;
+  detail?: string;
+}
+
+export interface AutoResolved {
+  path: string;
+  copy: string | null;
+  note: string;
+}
+
+export type ConflictKind = "both_modified" | "deleted_by_us" | "deleted_by_them";
+
+export interface ConflictInfo {
+  path: string;
+  kind: ConflictKind;
+}
+
+export interface SyncReport {
+  committed: boolean;
+  pulled: boolean;
+  pushed: boolean;
+  changed: Change[];
+  conflicts: ConflictInfo[];
+  auto_resolved: AutoResolved[];
+  notes: string[];
+}
+
+export interface SyncOutcome {
+  report: SyncReport | null;
+  error: SyncError | null;
+  status: SyncStatus;
+  workspace: WorkspaceInfo | null;
+}
+
+export type Probe = ({ state: "empty" } | { state: "has_data"; branch: string } | { state: "will_create" }) & {
+  url: string;
+  kind: RemoteKind;
+};
+
+export type Segment = { type: "same"; text: string } | { type: "conflict"; ours: string; theirs: string };
+
+export interface ConflictDetail {
+  path: string;
+  kind: ConflictKind;
+  ours_label: string;
+  theirs_label: string;
+  theirs_time: number | null;
+  segments: Segment[];
+  remaining_text: string | null;
+}
+
+export type Resolution = { action: "content"; text: string } | { action: "ours" } | { action: "theirs" } | { action: "both" };
+
+export interface CommitInfo {
+  id: string;
+  author: string;
+  device: string;
+  time: number;
+  subject: string;
 }

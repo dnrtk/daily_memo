@@ -2373,6 +2373,7 @@ dependencies = [
  "chrono",
  "memo-core",
  "memo-index",
+ "memo-sync",
  "portable-pty",
  "serde",
  "serde_json",
@@ -2405,6 +2406,17 @@ dependencies = [
  "unicode-normalization",
  "walkdir",
  "zip",
+]
+
+[[package]]
+name = "memo-sync"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "memo-core",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

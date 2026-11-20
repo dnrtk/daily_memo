@@ -3,7 +3,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { basicSetup } from "codemirror";
 import { EditorView, keymap } from "@codemirror/view";
-import { Compartment, EditorState, type Extension } from "@codemirror/state";
+import { Annotation, Compartment, EditorState, type Extension } from "@codemirror/state";
 import { markdown } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 import { oneDark } from "@codemirror/theme-one-dark";
@@ -27,6 +27,11 @@ export interface EditorHandle {
   rename(from: string, to: string): void;
   reload(path: string): Promise<void>;
   /**
+   * ディスク側が変わったとき(他の端末からの同期など)に取り込む。
+   * 未保存の編集があれば上書きせず "kept"。開いていなければ "none"
+   */
+  refresh(path: string): Promise<"reloaded" | "kept" | "none">;
+  /**
    * このファイルを表示したときのカーソル位置を指定する。
    * "end" は末尾(日次ノートへの追記用)、数値はその行(検索結果からのジャンプ用)。
    * 既に表示中ならすぐ移動する。
@@ -47,6 +52,9 @@ interface Props {
   /** 表示先頭の行番号(スクロールのたび。プレビューの追従用) */
   onTopLine?(path: string, line: number): void;
 }
+
+/** ディスクからの取り込みで起きた変更(保存・未保存の扱いをしない) */
+const fromDisk = Annotation.define<boolean>();
 
 const themeC = new Compartment();
 const fontC = new Compartment();
@@ -129,8 +137,9 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor(
       if (!doc) return;
       doc.state = u.state;
       const text = u.state.doc.toString();
-      cb.current.onDirtyChange(path, text !== doc.savedText);
       cb.current.onText?.(path, text);
+      if (u.transactions.some((t) => t.annotation(fromDisk))) return;
+      cb.current.onDirtyChange(path, text !== doc.savedText);
       const ms = settingsRef.current.autosave_ms;
       if (ms > 0) {
         window.clearTimeout(doc.timer);
@@ -258,6 +267,40 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor(
         view.current.setState(doc.state);
         cb.current.onText?.(path, doc.state.doc.toString());
       }
+    },
+    async refresh(path) {
+      const doc = docs.current.get(path);
+      if (!doc) return "none";
+      const v = view.current;
+      const isActive = active.current === path && !!v;
+      if (isActive) doc.state = v.state;
+      const current = doc.state.doc.toString();
+      if (current !== doc.savedText) return "kept";
+      const { content, ...meta } = await api.readFile(path);
+      // 読み込み中に編集が始まっていたら触らない
+      const latest = isActive && view.current ? view.current.state.doc.toString() : doc.state.doc.toString();
+      if (latest !== current) return "kept";
+      doc.meta = meta;
+      if (content === current) return "none";
+      // 変わった部分だけ置き換える(カーソル位置と undo 履歴を保つ)
+      let start = 0;
+      const max = Math.min(current.length, content.length);
+      while (start < max && current.charCodeAt(start) === content.charCodeAt(start)) start++;
+      let endA = current.length;
+      let endB = content.length;
+      while (endA > start && endB > start && current.charCodeAt(endA - 1) === content.charCodeAt(endB - 1)) {
+        endA--;
+        endB--;
+      }
+      doc.savedText = content;
+      const spec = { changes: { from: start, to: endA, insert: content.slice(start, endB) }, annotations: fromDisk.of(true) };
+      if (active.current === path && view.current) {
+        view.current.dispatch(spec);
+        doc.state = view.current.state;
+      } else {
+        doc.state = doc.state.update(spec).state;
+      }
+      return "reloaded";
     },
     focus() {
       view.current?.focus();

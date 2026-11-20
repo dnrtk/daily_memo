@@ -1,6 +1,7 @@
 //! Tauri コマンド層。ロジックはすべて memo-core / memo-index 側に置き、ここは薄く保つ。
 
 mod index_service;
+mod sync_cmd;
 mod terminal;
 
 use std::{
@@ -37,6 +38,8 @@ struct AppState {
     index: IndexService,
     /// 検索用の読み取り接続(作業フォルダごとに開き直す)
     search_store: Mutex<Option<(PathBuf, Store)>>,
+    /// 同期(Git)の処理を 1 つずつ実行するためのロック
+    sync_lock: Mutex<()>,
 }
 
 #[derive(Serialize)]
@@ -448,6 +451,7 @@ pub fn run() {
                 config_dir,
                 index,
                 search_store: Mutex::new(None),
+                sync_lock: Mutex::new(()),
             });
             Ok(())
         })
@@ -486,6 +490,16 @@ pub fn run() {
             term_write,
             term_resize,
             term_kill,
+            sync_cmd::sync_status,
+            sync_cmd::sync_probe,
+            sync_cmd::sync_connect,
+            sync_cmd::sync_run,
+            sync_cmd::sync_disable,
+            sync_cmd::sync_history,
+            sync_cmd::sync_conflicts,
+            sync_cmd::sync_conflict_detail,
+            sync_cmd::sync_resolve,
+            sync_cmd::sync_default_device,
         ])
         .on_window_event(|window, event| {
             // メインを閉じたら切り離したウィンドウも閉じる(それぞれ保存してから閉じる)

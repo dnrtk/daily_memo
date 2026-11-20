@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>複数端末同期(Git)の設計と判断</title>
+<style>
+  :root {
+    --bg: #f7f6f3; --fg: #2b2a27; --muted: #75716a; --border: #d9d5cc; --card: #fff;
+    --accent: #2f6f62; --note-bg: #eef5f3; --warn: #9a6400; --warn-bg: #fbf3e2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1e2023; --fg: #d9d7d2; --muted: #8b8984; --border: #34373b; --card: #26292d;
+      --accent: #6fb5a3; --note-bg: #23362f; --warn: #e0b050; --warn-bg: #3a3122; }
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 1rem/1.75 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.6rem; margin: 0 0 12px; }
+  h2 { font-size: 1.25rem; margin: 2.2em 0 .6em; padding-bottom: .2em; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.05rem; margin: 1.6em 0 .4em; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, "Yu Gothic", monospace; font-size: .875rem; }
+  pre { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; }
+  dl.meta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; font-size: .9rem; color: var(--muted); }
+  dl.meta dt { font-weight: 600; }
+  dl.meta dd { margin: 0; }
+  nav { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 8px 20px; margin: 20px 0; }
+  nav ol { margin: 8px 0; }
+  a { color: var(--accent); }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+  th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--card); }
+  .note, .warning { border-radius: 8px; padding: 10px 14px; margin: 12px 0; border-left: 4px solid; }
+  .note { background: var(--note-bg); border-color: var(--accent); }
+  .warning { background: var(--warn-bg); border-color: var(--warn); }
+  .note::before { content: "メモ: "; font-weight: 700; }
+  .warning::before { content: "要確認: "; font-weight: 700; }
+  figure { margin: 16px 0; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; overflow-x: auto; }
+  figcaption { font-size: .875rem; color: var(--muted); margin-top: 6px; }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>複数端末同期(Git)の設計と判断</h1>
+  <dl class="meta">
+    <dt>作成日</dt><dd>2026-11-20</dd>
+    <dt>対象</dt><dd>memo-editor(作業フォルダの Windows / Linux 間同期)</dd>
+    <dt>使用モデル</dt><dd>Claude Opus 5.5</dd>
+    <dt>関連</dt><dd><code>crates/memo-sync/</code>、<code>src-tauri/src/sync_cmd.rs</code>、<code>src/useSync.ts</code>、<code>src/components/Sync*.tsx</code>、<code>src/components/ConflictDialog.tsx</code></dd>
+  </dl>
+</header>
+
+<nav aria-label="目次">
+  <ol>
+    <li><a href="#summary">概要</a></li>
+    <li><a href="#decisions">主な判断</a></li>
+    <li><a href="#flow">同期の流れ</a></li>
+    <li><a href="#conflict">競合の扱い</a></li>
+    <li><a href="#ux">UI / UX</a></li>
+    <li><a href="#verify">検証</a></li>
+    <li><a href="#confirm">確認してほしい点</a></li>
+  </ol>
+</nav>
+
+<section id="summary">
+<h2>1. 概要</h2>
+<p>作業フォルダ自体を Git リポジトリにし、GitHub・GitLab・任意の Git サーバー・ファイルサーバ上の bare リポジトリのいずれかと同期します。
+保存すると自動でコミットされ、編集が止まったタイミングや一定間隔で送受信します。手動同期(Ctrl+Shift+S)とメモ付きの同期もできます。
+同じ箇所を複数の端末で編集した場合は、専用画面で箇所ごとにどちらを残すかを選べます。</p>
+</section>
+
+<section id="decisions">
+<h2>2. 主な判断</h2>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>論点</th><th>採用</th><th>理由・却下した案</th></tr></thead>
+  <tbody>
+    <tr><td>Git の実装</td><td>システムの <code>git</code> CLI を呼ぶ</td><td>HTTPS は Git Credential Manager、SSH は ssh-agent と、普段の git の認証設定がそのまま使える。libgit2(git2)は SSH・認証まわりが弱く、gix は push が未成熟なので見送り</td></tr>
+    <tr><td>コードの配置</td><td>新クレート <code>memo-sync</code></td><td>既存の「ロジックは UI 非依存のクレート、Tauri 層は薄く」の方針に合わせた。実際の git を使った結合テストを書きやすい</td></tr>
+    <tr><td>取り込み方式</td><td>merge(rebase ではない)</td><td>rebase は競合が複数コミットにまたがると解消が何度も必要になる。メモ用途では履歴の直線性より分かりやすさを優先</td></tr>
+    <tr><td>端末ごとの情報</td><td><code>.git/config</code>(有効化・最終同期時刻)とアプリ設定(間隔・端末名)</td><td>作業フォルダ内の共有ファイルに置くと、それ自体が同期されて端末間で衝突する</td></tr>
+    <tr><td>同期しないもの</td><td><code>.memo/*</code>(<code>categories.yaml</code> を除く)、一時ファイル、Office のロックファイル</td><td>検索インデックスは端末ごとに作り直せるうえサイズが大きい。カテゴリ定義は共有したいので同期する</td></tr>
+    <tr><td>改行コード</td><td><code>.gitattributes</code> に <code>* -text</code>、git 呼び出しで <code>core.autocrlf=false</code></td><td>このアプリは CRLF・Shift_JIS を元の形式のまま保存する設計。git の変換が入ると Windows / Linux 間で差分が出続ける</td></tr>
+    <tr><td>上位フォルダが Git 管理下</td><td>作業フォルダを独立したリポジトリにする</td><td>ホームフォルダを dotfiles 用に Git 管理していると、その配下が全部「入れ子」扱いになる(この PC がまさにそうだった)。拒否するより独立させる方が実用的</td></tr>
+    <tr><td>ファイルサーバの所有者</td><td>そのリモートに限り <code>safe.directory=*</code></td><td>共有フォルダ上のリポジトリは所有者が別ユーザーになりやすく、git 2.35.2 以降は拒否される。作業フォルダ側はそのパスだけを許可</td></tr>
+    <tr><td>コミットの端末名</td><td>コミットに <code>Device:</code> トレーラーを付ける</td><td>user.name は全端末で同じことが多く、どの端末の変更か区別できないため。user.name / email が未設定でも端末名から補ってコミットできる</td></tr>
+  </tbody>
+</table>
+</div>
+</section>
+
+<section id="flow">
+<h2>3. 同期の流れ</h2>
+<figure>
+<pre class="mermaid">
+flowchart TD
+  T["きっかけ: 起動時 / 一定間隔 / 保存して編集が止まったとき / ウィンドウに戻ったとき / 手動 / 終了時"] --> F["開いているエディタを保存(切り離したウィンドウ含む)"]
+  F --> C["変更をすべてコミット"]
+  C --> Fe["fetch"]
+  Fe -->|失敗: オフライン等| Off["状態表示だけ更新(コミットは手元に残す)"]
+  Fe --> B{"相手に新しいコミットがある?"}
+  B -->|いいえ| P["push"]
+  B -->|はい| M["merge"]
+  M -->|競合なし| P
+  M -->|競合あり| R["作業ツリーを『この端末の版』に戻し、解消待ちで停止"]
+  P -->|拒否: 他の端末が先に送信| Fe
+  P --> D["開いているタブへ他の端末の変更を反映"]
+</pre>
+<figcaption>図1: 1 回の同期の処理。送信が拒否されたら最大 3 回まで取り込みからやり直す</figcaption>
+</figure>
+<h3>初回接続</h3>
+<p>まずリモートに接続できるかを確認し、失敗したら作業フォルダには何も変更しません。リモートが空ならこの端末の内容を送ります。データがあれば取り込んで合わせ、同じパスで内容が違うファイルは<strong>この端末の版を別名で残して</strong>からリモートの版にします(どちらも消えません)。<code>categories.yaml</code>・<code>.gitignore</code>・<code>.gitattributes</code> はリモート側を優先します。</p>
+</section>
+
+<section id="conflict">
+<h2>4. 競合の扱い</h2>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>状況</th><th>扱い</th></tr></thead>
+  <tbody>
+    <tr><td>テキストを両方で編集し、重なっていない</td><td>git が自動で統合する(画面には出ない)</td></tr>
+    <tr><td>テキストの同じ箇所を両方で編集</td><td>解消画面で箇所ごとに「この端末 / 相手 / 両方(順序 2 通り)」を選ぶ。結果を直接編集してもよい。「両方のファイルとして残す」も選べる</td></tr>
+    <tr><td>Office・PDF・画像を両方で変更</td><td>自動で両方残す(相手の版を <code>名前 (競合 端末名 日時).拡張子</code> で保存)</td></tr>
+    <tr><td>一方が編集、他方が削除(テキスト)</td><td>解消画面で「残す / 削除」を選ぶ</td></tr>
+    <tr><td>一方が編集、他方が削除(バイナリ)</td><td>編集された側を自動で残す(データを失わない方向)</td></tr>
+  </tbody>
+</table>
+</div>
+<p class="note">競合中も作業ツリーには常に「この端末の版」が置かれます。<code>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</code> などのマーカーがエディタや検索インデックスに入り込まず、解消を後回しにしても編集を続けられます。差分の計算は <code>git merge-file</code> にマーカー長 32 を指定して行い、Markdown の見出し下線(<code>=======</code>)と取り違えないようにしています。</p>
+</section>
+
+<section id="ux">
+<h2>5. UI / UX</h2>
+<ul>
+  <li><strong>ステータスバー</strong>: 同期済み / 未送信 N / 同期中 / オフライン / 認証エラー / 競合 N をアイコンと文字で表示します(色だけに頼らない)。完了時にアイコンが小さく弾み、競合時は 2 回だけ揺れます。</li>
+  <li><strong>パネル</strong>(ステータスバーをクリック): 状態、接続先、未送信の変更(A/M/D)、メモ付きの「今すぐ同期」、最近の更新(端末名・相対時刻)、自動同期の設定内容を表示します。</li>
+  <li><strong>設定 → 同期</strong>: 未設定のときは「① 種類のカード → ② URL / パス入力と確認 → ③ 端末名」の順に進みます。確認結果に応じて開始ボタンの文言が「アップロードして / 取り込んで / 作成して 同期を開始」に変わり、何が起きるかを事前に説明します。入力内容から種類を自動で推定します。</li>
+  <li><strong>エラー</strong>: 原因を分類(ネットワーク / 認証 / 見つからない / 所有者 / 拒否)して日本語で表示します。git の出力は「詳細」に折りたたみます。自動同期の失敗はトーストを出さず、状態表示だけを変えます。</li>
+  <li><strong>軽さ</strong>: git の処理はすべて Rust 側の別スレッドで動かし、同時に 1 つしか実行しません。状態取得は <code>git status --porcelain=v2</code> の 1 回で済ませます。保存のたびではなく、編集が止まってからまとめて送ります。アニメーションは transform / opacity のみで、<code>prefers-reduced-motion</code> のときは止めます。</li>
+</ul>
+</section>
+
+<section id="verify">
+<h2>6. 検証</h2>
+<ul>
+  <li><code>cargo test -p memo-sync</code>: 単体テスト 10 件と、実際の git で「ファイルサーバ上のリモート + 2 端末」を作る結合テスト 8 件(接続・自動統合・箇所ごとの解消・両方残す・バイナリの自動解決・削除と編集の競合・CRLF の保持・オフライン後の再送)がすべて成功</li>
+  <li><code>cargo clippy --workspace --all-targets</code>: 警告なし。<code>tsc --noEmit</code> と <code>vite build</code> も成功</li>
+  <li>画面: Tauri の呼び出しをモックしたプレビューをブラウザで開き、パネル・設定の初回フロー・競合画面の表示と操作を確認(確認後にモックは削除)</li>
+  <li>未検証: Tauri アプリとしての実起動、GitHub / GitLab への実際の HTTPS・SSH 認証、UNC パスの実ファイルサーバ、Linux 実機</li>
+</ul>
+</section>
+
+<section id="confirm">
+<h2>7. 確認してほしい点</h2>
+<p class="warning">既定値は「自動同期オン・5 分ごと・保存の 1 分後・起動時と終了時も同期」にしました。通信量や GitHub へのアクセス頻度が気になる場合は、設定 → 同期で変更できます。</p>
+<p class="warning">初回接続でリモートにデータがあるときは、カテゴリ設定(<code>categories.yaml</code>)をリモート側に合わせます。この端末でカテゴリを独自に変更していた場合、その設定は失われます(フォルダとファイルは残ります)。</p>
+<p class="warning">コミット時に git のフック(pre-commit 等)は実行しない(<code>--no-verify</code>)ようにしています。メモ用リポジトリでフックを使う予定があれば変更が必要です。</p>
+</section>
+</main>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "default" });
+</script>
+</body>
+</html>

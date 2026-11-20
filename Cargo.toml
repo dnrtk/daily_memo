@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/memo-core", "crates/memo-index", "src-tauri"]
+members = ["crates/memo-core", "crates/memo-index", "crates/memo-sync", "src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

@@ -6,7 +6,15 @@ import type {
   CategoryConfig,
   DirEntry,
   ChunkRow,
+  CommitInfo,
+  ConflictDetail,
+  ConflictInfo,
   IndexStatus,
+  Probe,
+  Resolution,
+  SyncError,
+  SyncOutcome,
+  SyncStatus,
   Provider,
   Saved,
   SearchResult,
@@ -63,6 +71,22 @@ export const api = {
   reattach: (payload: unknown) => invoke<void>("reattach", { payload }),
   closeDetachedWindows: () => invoke<void>("close_detached_windows"),
   focusWindow: (label: string) => invoke<void>("focus_window", { label }),
+  syncStatus: () => invoke<SyncStatus>("sync_status"),
+  /** 接続前の確認(作業フォルダは変更しない) */
+  syncProbe: async (url: string): Promise<{ ok: Probe } | { err: SyncError }> => {
+    const r = await invoke<{ Ok: Probe } | { Err: SyncError }>("sync_probe", { url });
+    return "Ok" in r ? { ok: r.Ok } : { err: r.Err };
+  },
+  syncConnect: (url: string) => invoke<SyncOutcome>("sync_connect", { url }),
+  syncRun: (message?: string | null) => invoke<SyncOutcome>("sync_run", { message: message ?? null }),
+  syncDisable: () => invoke<SyncStatus>("sync_disable"),
+  syncHistory: (limit: number) => invoke<CommitInfo[]>("sync_history", { limit }),
+  syncConflicts: () => invoke<ConflictInfo[]>("sync_conflicts"),
+  syncConflictDetail: (path: string) => invoke<ConflictDetail>("sync_conflict_detail", { path }),
+  /** 戻り値は残りの競合数 */
+  syncResolve: (path: string, resolution: Resolution) => invoke<number>("sync_resolve", { path, resolution }),
+  syncDefaultDevice: () => invoke<string>("sync_default_device"),
+
   onTermExit: (cb: (id: number, code: number | null) => void): Promise<UnlistenFn> =>
     listen<{ id: number; code: number | null }>("term-exit", (e) => cb(e.payload.id, e.payload.code)),
 };
