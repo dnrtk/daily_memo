@@ -189,6 +189,9 @@ pub struct AppSettings {
     pub sync: SyncSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_workspace: Option<String>,
+    /// 最近開いた作業フォルダ(新しい順)。作業フォルダの切り替えメニューに出す
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_workspaces: Vec<String>,
 }
 
 impl Default for AppSettings {
@@ -218,11 +221,36 @@ impl Default for AppSettings {
             terminal: TerminalSettings::default(),
             sync: SyncSettings::default(),
             last_workspace: None,
+            recent_workspaces: Vec::new(),
         }
     }
 }
 
+/// 切り替えメニューに残す作業フォルダの数
+pub const RECENT_WORKSPACES_MAX: usize = 10;
+
 impl AppSettings {
+    /// 作業フォルダを開いた記録を残す(先頭へ移動。同じフォルダは 1 つにまとめる)
+    pub fn remember_workspace(&mut self, root: &str) {
+        self.last_workspace = Some(root.to_string());
+        self.recent_workspaces.retain(|p| !same_path(p, root));
+        self.recent_workspaces.insert(0, root.to_string());
+        self.recent_workspaces.truncate(RECENT_WORKSPACES_MAX);
+    }
+
+    /// 最近の作業フォルダから外す
+    pub fn forget_workspace(&mut self, root: &str) {
+        self.recent_workspaces.retain(|p| !same_path(p, root));
+    }
+
+    /// 最近の作業フォルダ(旧版の設定で一覧がなければ last_workspace を使う)
+    pub fn recent_workspaces(&self) -> Vec<String> {
+        if self.recent_workspaces.is_empty() {
+            return self.last_workspace.iter().cloned().collect();
+        }
+        self.recent_workspaces.clone()
+    }
+
     pub fn load_or_default(dir: &Path) -> Result<Self> {
         let path = dir.join(SETTINGS_FILE);
         if !path.exists() {
@@ -272,6 +300,15 @@ impl AppSettings {
     }
 }
 
+/// Windows はパスの大文字小文字を区別しない
+fn same_path(a: &str, b: &str) -> bool {
+    if cfg!(windows) {
+        a.to_lowercase() == b.to_lowercase()
+    } else {
+        a == b
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,4 +351,23 @@ roles:
         s.roles.chat.provider = "missing".into();
         assert!(s.validate().is_err());
     }
+
+    #[test]
+    fn recent_workspaces_move_to_front_and_cap() {
+        let mut s = AppSettings::default();
+        assert!(s.recent_workspaces().is_empty());
+        s.last_workspace = Some("/old".into());
+        assert_eq!(s.recent_workspaces(), vec!["/old".to_string()]);
+        for i in 0..12 {
+            s.remember_workspace(&format!("/w{i}"));
+        }
+        s.remember_workspace("/w5");
+        assert_eq!(s.recent_workspaces.len(), RECENT_WORKSPACES_MAX);
+        assert_eq!(s.recent_workspaces[0], "/w5");
+        assert_eq!(s.recent_workspaces.iter().filter(|p| *p == "/w5").count(), 1);
+        assert_eq!(s.last_workspace.as_deref(), Some("/w5"));
+        s.forget_workspace("/w5");
+        assert!(!s.recent_workspaces.iter().any(|p| p == "/w5"));
+    }
 }
+

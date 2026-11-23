@@ -97,6 +97,14 @@ export interface AppSettings {
   terminal: TerminalSettings;
   sync: SyncSettings;
   last_workspace?: string | null;
+  recent_workspaces?: string[];
+}
+
+export interface RecentWorkspace {
+  path: string;
+  name: string;
+  /** フォルダが今もあるか(ネットワークドライブ未接続なども false) */
+  exists: boolean;
 }
 
 // ---- 検索 ----------------------------------------------------------------------

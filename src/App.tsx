@@ -16,6 +16,7 @@ import { SearchPanel } from "./components/SearchPanel";
 import { SettingsDialog, type SettingsTab } from "./components/SettingsDialog";
 import { SyncIndicator } from "./components/SyncIndicator";
 import { ConflictDialog } from "./components/ConflictDialog";
+import { WorkspaceMenu, WorkspaceTile, samePath } from "./components/WorkspaceMenu";
 import { useSync } from "./useSync";
 import { AboutDialog } from "./components/AboutDialog";
 import { SplitDivider } from "./components/SplitDivider";
@@ -89,6 +90,10 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>(undefined);
   const [showConflicts, setShowConflicts] = useState(false);
   const [closing, setClosing] = useState(false);
+  /** 作業フォルダの切り替え中に出す表示(null なら非表示) */
+  const [switching, setSwitching] = useState<string | null>(null);
+  const [wsMenu, setWsMenu] = useState<{ x: number; y: number } | null>(null);
+  const wsSwitchBtn = useRef<HTMLButtonElement>(null);
   const [showCapture, setShowCapture] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null);
@@ -543,11 +548,24 @@ export default function App() {
 
   // ---- 作業フォルダ ----------------------------------------------------------------
 
-  const chooseWorkspace = async () => {
-    const dir = await openDialog({ directory: true, multiple: false, title: "作業フォルダを選択" });
-    if (typeof dir !== "string") return;
-    await saveAll();
+  /** OS のパス(\ 区切りもあり得る)の親フォルダ・末尾の名前 */
+  const nativeParent = (p: string) => p.replace(/[\\/]+$/, "").replace(/[\\/][^\\/]*$/, "") || p;
+  const nativeBase = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+  const switchingRef = useRef(false);
+  const switchWorkspace = async (dir: string) => {
+    setWsMenu(null);
+    if (workspace && samePath(dir, workspace.root)) return;
+    if (switchingRef.current) return;
+    switchingRef.current = true;
     try {
+      // 切り離したウィンドウも含めて保存し、未送信の変更があれば元の作業フォルダで送ってから移る
+      await flushEditors();
+      const st = syncRef.current?.status;
+      if (st?.state === "ready" && st.remote_url && syncRef.current) {
+        setSwitching("未送信の変更を同期してから切り替えています…");
+        await syncRef.current.flushOnExit(15000);
+      }
+      setSwitching("作業フォルダを開いています…");
       const ws = await api.openWorkspace(dir);
       await api.closeDetachedWindows();
       detached.current.clear();
@@ -556,11 +574,40 @@ export default function App() {
       setGroups([{ id, tabs: [], active: null }]);
       setFocusedGroup(id);
       setWorkspace(ws);
+      setPreview(null);
       refreshTree();
+      notify(`作業フォルダを「${ws.name}」に切り替えました`);
     } catch (e) {
-      onError(errorMessage(e));
+      notify(`「${nativeBase(dir)}」を開けません: ${errorMessage(e)}`, true, {
+        label: "一覧から外す",
+        run: () => void api.forgetWorkspace(dir).catch(() => {}),
+      });
+    } finally {
+      switchingRef.current = false;
+      setSwitching(null);
     }
   };
+
+  const chooseWorkspace = async () => {
+    setWsMenu(null);
+    const dir = await openDialog({
+      directory: true,
+      multiple: false,
+      title: "作業フォルダを選択",
+      defaultPath: workspace ? nativeParent(workspace.root) : undefined,
+    });
+    if (typeof dir === "string") await switchWorkspace(dir);
+  };
+
+  const toggleWsMenu = () => {
+    if (wsMenu) {
+      setWsMenu(null);
+      return;
+    }
+    const r = wsSwitchBtn.current?.getBoundingClientRect();
+    setWsMenu({ x: (r?.right ?? ACTIVITY_W) + 6, y: r?.top ?? 8 });
+  };
+  const closeWsMenu = useCallback(() => setWsMenu(null), []);
 
   const openDaily = async () => {
     try {
@@ -822,6 +869,21 @@ export default function App() {
     >
       <nav className="activity" aria-label="ビュー切り替え">
         <button
+          ref={wsSwitchBtn}
+          className={wsMenu ? "ws-switch on" : "ws-switch"}
+          title={workspace ? `作業フォルダ: ${workspace.name}\n${workspace.root}\nクリックで切り替え` : "作業フォルダを開く"}
+          aria-haspopup="menu"
+          aria-expanded={!!wsMenu}
+          onClick={toggleWsMenu}
+        >
+          {workspace ? (
+            <WorkspaceTile key={workspace.root} name={workspace.name} path={workspace.root} />
+          ) : (
+            <svg viewBox="0 0 24 24" aria-hidden><path d="M3 6h7l2 2h9v11H3z" /><path d="M12 11v5M9.5 13.5h5" /></svg>
+          )}
+        </button>
+        <span className="activity-sep" aria-hidden />
+        <button
           className={sidebarOpen && sideView === "files" ? "on" : ""}
           title="ファイル(クリックで表示 / 非表示、Ctrl+B)"
           onClick={() => toggleView("files")}
@@ -847,9 +909,13 @@ export default function App() {
       <aside className="sidebar" hidden={!sidebarOpen}>
         <div className="side-view" hidden={sideView !== "files"}>
           <header className="side-head">
-            <span className="ws-name" title={workspace?.root}>
+            <button
+              className="ws-name"
+              title={workspace ? `${workspace.root}\nクリックで作業フォルダを切り替え` : "作業フォルダを開く"}
+              onClick={() => (workspace ? toggleWsMenu() : void chooseWorkspace())}
+            >
               {workspace?.name ?? "フォルダ未選択"}
-            </span>
+            </button>
             {workspace && (
               <>
                 <button className="icon" title="エクスプローラーで開く(Ctrl+E)" onClick={openFolder}>↗</button>
@@ -1071,6 +1137,26 @@ export default function App() {
               {toast.action.label}
             </button>
           )}
+        </div>
+      )}
+      {wsMenu && (
+        <WorkspaceMenu
+          x={wsMenu.x}
+          y={wsMenu.y}
+          current={workspace}
+          onSwitch={(p) => void switchWorkspace(p)}
+          onBrowse={() => void chooseWorkspace()}
+          onReveal={() => {
+            setWsMenu(null);
+            openFolder();
+          }}
+          onClose={closeWsMenu}
+          onError={onError}
+        />
+      )}
+      {switching && !closing && (
+        <div className="closing" role="status">
+          {switching}
         </div>
       )}
       {closing && (

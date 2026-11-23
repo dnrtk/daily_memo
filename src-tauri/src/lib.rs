@@ -81,7 +81,8 @@ fn with_ws<T>(state: &State<AppState>, f: impl FnOnce(&mut Workspace) -> memo_co
 
 // ---- 作業フォルダ --------------------------------------------------------------
 
-#[tauri::command]
+// ネットワーク上のフォルダでも画面を止めないよう、メインスレッド以外で実行する
+#[tauri::command(async)]
 fn open_workspace(app: tauri::AppHandle, state: State<AppState>, path: String) -> CmdResult<WorkspaceInfo> {
     let ws = Workspace::open(&path).map_err(|e| e.to_string())?;
     let out = info(&ws);
@@ -90,9 +91,38 @@ fn open_workspace(app: tauri::AppHandle, state: State<AppState>, path: String) -
     *state.workspace.lock().map_err(|e| e.to_string())? = Some(ws);
 
     let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
-    settings.last_workspace = Some(out.root.clone());
+    settings.remember_workspace(&out.root);
     settings.save(&state.config_dir).map_err(|e| e.to_string())?;
     Ok(out)
+}
+
+#[derive(Serialize)]
+struct RecentWorkspace {
+    path: String,
+    name: String,
+    /// フォルダが今もあるか(ネットワークドライブが未接続のときなども false)
+    exists: bool,
+}
+
+#[tauri::command(async)]
+fn recent_workspaces(state: State<AppState>) -> CmdResult<Vec<RecentWorkspace>> {
+    let list = state.settings.lock().map_err(|e| e.to_string())?.recent_workspaces();
+    Ok(list
+        .into_iter()
+        .map(|path| {
+            let p = Path::new(&path);
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone());
+            let exists = p.is_dir();
+            RecentWorkspace { path, name, exists }
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn forget_workspace(state: State<AppState>, path: String) -> CmdResult<()> {
+    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+    settings.forget_workspace(&path);
+    settings.save(&state.config_dir).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -184,6 +214,7 @@ fn save_settings(state: State<AppState>, settings: AppSettings) -> CmdResult<App
     let mut current = state.settings.lock().map_err(|e| e.to_string())?;
     let mut next = settings;
     next.last_workspace = current.last_workspace.clone();
+    next.recent_workspaces = current.recent_workspaces.clone();
     next.save(&state.config_dir).map_err(|e| e.to_string())?;
     *current = next.clone();
     state.index.send(Cmd::Settings(Box::new(next.clone())));
@@ -457,6 +488,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             open_workspace,
+            recent_workspaces,
+            forget_workspace,
             current_workspace,
             save_categories,
             list_dir,

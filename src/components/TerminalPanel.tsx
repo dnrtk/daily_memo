@@ -547,7 +547,7 @@ export const TermView = forwardRef<TermViewHandle, TermViewProps>(function TermV
       const mod = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
       if (mod && !e.shiftKey && !e.altKey && k === "j") return false; // パネル開閉はアプリへ
-      if (mod && e.shiftKey && ["d", "n", "f"].includes(k)) return false; // 今日のメモ / クイックメモ / 検索
+      if (mod && e.shiftKey && ["d", "n", "f", "s"].includes(k)) return false; // 今日のメモ / クイックメモ / 検索 / 同期
       if (mod && (k === "," || k === "\\")) return false; // 設定 / 分割
       if (e.key === "F11") return false; // フルスクリーン切り替えはアプリへ
       if (mod && !e.shiftKey && k === "c" && t.hasSelection()) {

@@ -11,6 +11,7 @@ import type {
   ConflictInfo,
   IndexStatus,
   Probe,
+  RecentWorkspace,
   Resolution,
   SyncError,
   SyncOutcome,
@@ -24,6 +25,8 @@ import type {
 
 export const api = {
   openWorkspace: (path: string) => invoke<WorkspaceInfo>("open_workspace", { path }),
+  recentWorkspaces: () => invoke<RecentWorkspace[]>("recent_workspaces"),
+  forgetWorkspace: (path: string) => invoke<void>("forget_workspace", { path }),
   currentWorkspace: () => invoke<WorkspaceInfo | null>("current_workspace"),
   saveCategories: (config: CategoryConfig) => invoke<WorkspaceInfo>("save_categories", { config }),
 

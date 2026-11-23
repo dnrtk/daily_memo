@@ -91,6 +91,7 @@ textarea.mono { font-family: var(--font-mono); font-size: 12px; }
   border-radius: 8px; color: var(--fg-muted); display: grid; place-items: center;
 }
 .activity button.on { color: var(--accent); background: var(--accent-soft); }
+.activity-sep { width: 18px; height: 1px; margin: 2px 0; background: var(--border); flex: none; }
 .activity svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
 .sidebar {
@@ -101,7 +102,12 @@ textarea.mono { font-family: var(--font-mono); font-size: 12px; }
   display: flex; align-items: center; gap: 2px; height: 36px; padding: 0 6px 0 14px;
   font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-muted);
 }
-.ws-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-name {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
+  border: none; background: none; padding: 3px 4px; margin-left: -4px; border-radius: 5px;
+  font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit;
+}
+.ws-name:hover:not(:disabled) { color: var(--fg); background: var(--bg-hover); }
 .side-actions { display: flex; gap: 6px; padding: 0 10px 8px; }
 .side-actions button { flex: 1; font-size: 12px; padding: 4px 6px; }
 .side-empty { padding: 24px 14px; }
@@ -661,4 +667,66 @@ button.mini.on { background: var(--accent-soft); border-color: var(--accent); co
 @media (prefers-reduced-motion: reduce) {
   .sicon.spin, .sync-btn .sicon, .sicon.pop, .sync-panel, .probe, .toast, .hunk-no .sicon, .pick-head .sicon { animation: none !important; }
   .kind-card, .side, .hunk, fieldset.sync-auto { transition: none; }
+}
+
+/* ---- 作業フォルダの切り替え ---- */
+.ws-tile {
+  --h: 160;
+  display: inline-grid; place-items: center; flex: none; border-radius: 7px;
+  font-size: 13px; font-weight: 700; line-height: 1; letter-spacing: 0; text-transform: none;
+  color: hsl(var(--h) 35% 28%); background: hsl(var(--h) 32% 86%);
+  box-shadow: inset 0 0 0 1px hsl(var(--h) 25% 72%);
+  animation: ws-tile-in 0.22s ease-out;
+}
+@media (prefers-color-scheme: dark) {
+  .ws-tile { color: hsl(var(--h) 45% 82%); background: hsl(var(--h) 22% 25%); box-shadow: inset 0 0 0 1px hsl(var(--h) 20% 36%); }
+}
+@keyframes ws-tile-in { from { transform: scale(0.7); opacity: 0; } }
+.activity .ws-switch:hover .ws-tile, .activity .ws-switch.on .ws-tile { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.activity .ws-switch.on { background: none; }
+
+.ws-menu {
+  position: fixed; z-index: 30; width: 340px; max-width: calc(100vw - 60px); max-height: calc(100vh - 20px);
+  display: flex; flex-direction: column; padding: 6px; font-size: 13px;
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow);
+  transform-origin: top left; animation: ws-menu-in 0.12s ease-out;
+}
+@keyframes ws-menu-in { from { opacity: 0; transform: translateX(-4px) scale(0.98); } }
+.ws-menu-head { padding: 4px 8px 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: var(--fg-muted); }
+.ws-menu-note { padding: 8px 10px; color: var(--fg-muted); font-size: 12px; list-style: none; }
+.ws-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; }
+.ws-list li { position: relative; }
+.ws-list li > button[role=menuitem] {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  border: none; background: none; padding: 6px 30px 6px 8px; border-radius: 7px;
+}
+.ws-list li > button[role=menuitem]:hover, .ws-list li > button[role=menuitem]:focus-visible { background: var(--bg-hover); outline: none; }
+.ws-list li.current > button[role=menuitem] { padding-right: 8px; }
+.ws-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.ws-label { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-path { font-size: 11px; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-list li.missing .ws-label, .ws-list li.missing .ws-tile { opacity: 0.5; }
+.ws-tag { display: inline-flex; align-items: center; gap: 3px; flex: none; font-size: 11px; color: var(--fg-muted); }
+.ws-tag.ok { color: var(--ok); }
+.ws-tag svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.ws-forget {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 22px; height: 22px; padding: 0;
+  display: grid; place-items: center; border: none; background: none; border-radius: 5px; color: var(--fg-muted);
+  opacity: 0; transition: opacity 0.1s;
+}
+.ws-list li:hover .ws-forget, .ws-list li:focus-within .ws-forget { opacity: 1; }
+.ws-forget:hover:not(:disabled) { color: var(--danger); background: var(--bg-hover); }
+.ws-forget svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.ws-menu-foot { display: flex; flex-direction: column; border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
+.ws-menu-foot button {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  border: none; background: none; padding: 6px 8px; border-radius: 7px;
+}
+.ws-menu-foot button:hover, .ws-menu-foot button:focus-visible { background: var(--bg-hover); outline: none; }
+.ws-menu-foot button span { flex: 1; }
+.ws-menu-foot svg { width: 16px; height: 16px; margin: 0 5px; fill: none; stroke: var(--fg-muted); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ws-menu kbd { font-family: inherit; font-size: 11px; color: var(--fg-muted); }
+@media (prefers-reduced-motion: reduce) {
+  .ws-tile, .ws-menu { animation: none !important; }
+  .ws-forget { transition: none; }
 }
